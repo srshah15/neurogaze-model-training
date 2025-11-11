@@ -268,3 +268,4 @@ When deploying, replace `http://localhost:8000` with your production API URL:
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 ```
 
+#
