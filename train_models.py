@@ -5,6 +5,7 @@ Implements the top 3 recommended models for ASD classification
 
 import pandas as pd
 import numpy as np
+import pickle
 from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_auc_score, roc_curve
@@ -90,6 +91,7 @@ output_dir.mkdir(exist_ok=True)
 
 # Store results
 results = {}
+saved_models = {}  # Store models for ensemble
 
 # ============================================================================
 # MODEL 1: XGBoost
@@ -133,6 +135,12 @@ if XGBOOST_AVAILABLE:
         'predictions': y_pred_xgb,
         'probabilities': y_pred_proba_xgb
     }
+    saved_models['xgb'] = xgb_model
+    
+    # Save XGBoost model
+    with open(output_dir / 'xgb_model.pkl', 'wb') as f:
+        pickle.dump(xgb_model, f)
+    print(f"   ✓ Model saved to {output_dir / 'xgb_model.pkl'}")
     
     # Feature importance
     feature_importance = pd.DataFrame({
@@ -189,6 +197,12 @@ if LIGHTGBM_AVAILABLE:
         'predictions': y_pred_lgbm,
         'probabilities': y_pred_proba_lgbm
     }
+    saved_models['lgbm'] = lgbm_model
+    
+    # Save LightGBM model
+    with open(output_dir / 'lgbm_model.pkl', 'wb') as f:
+        pickle.dump(lgbm_model, f)
+    print(f"   ✓ Model saved to {output_dir / 'lgbm_model.pkl'}")
 
 # ============================================================================
 # MODEL 3: Random Forest
@@ -230,6 +244,12 @@ if RF_AVAILABLE:
         'predictions': y_pred_rf,
         'probabilities': y_pred_proba_rf
     }
+    saved_models['rf'] = rf_model
+    
+    # Save Random Forest model
+    with open(output_dir / 'random_forest_model.pkl', 'wb') as f:
+        pickle.dump(rf_model, f)
+    print(f"   ✓ Model saved to {output_dir / 'random_forest_model.pkl'}")
 
 # ============================================================================
 # COMPARISON & VISUALIZATION
@@ -313,6 +333,78 @@ if len(results) > 0:
     plt.savefig(output_dir / 'confusion_matrices.png', dpi=300, bbox_inches='tight')
     plt.close()
     print(f"✓ Confusion matrices saved to: {output_dir / 'confusion_matrices.png'}")
+
+# ============================================================================
+# ENSEMBLE MODEL (Voting Classifier)
+# ============================================================================
+if len(saved_models) >= 2:
+    print("\n" + "="*70)
+    print("CREATING ENSEMBLE MODEL")
+    print("="*70)
+    
+    from sklearn.ensemble import VotingClassifier
+    
+    # Create list of (name, model) tuples for voting
+    estimators = []
+    if 'xgb' in saved_models:
+        estimators.append(('xgb', saved_models['xgb']))
+    if 'lgbm' in saved_models:
+        estimators.append(('lgbm', saved_models['lgbm']))
+    if 'rf' in saved_models:
+        estimators.append(('rf', saved_models['rf']))
+    
+    if len(estimators) >= 2:
+        # Use soft voting (averages probabilities) for better performance
+        ensemble = VotingClassifier(
+            estimators=estimators,
+            voting='soft',  # Use probability voting
+            n_jobs=-1
+        )
+        
+        print(f"\nTraining ensemble with {len(estimators)} models:")
+        for name, _ in estimators:
+            print(f"  - {name.upper()}")
+        
+        # Fit ensemble (models are already trained, but VotingClassifier needs refit)
+        ensemble.fit(X_train, y_train)
+        
+        # Evaluate ensemble
+        y_pred_ensemble = ensemble.predict(X_test)
+        y_pred_proba_ensemble = ensemble.predict_proba(X_test)[:, 1]
+        
+        acc_ensemble = accuracy_score(y_test, y_pred_ensemble)
+        auc_ensemble = roc_auc_score(y_test, y_pred_proba_ensemble)
+        
+        print(f"\nEnsemble Results:")
+        print(f"  Accuracy: {acc_ensemble:.4f} ({acc_ensemble*100:.2f}%)")
+        print(f"  ROC-AUC: {auc_ensemble:.4f}")
+        print(f"\nClassification Report:")
+        print(classification_report(y_test, y_pred_ensemble, target_names=['TD', 'ASD']))
+        
+        # Save ensemble
+        with open(output_dir / 'ensemble_model.pkl', 'wb') as f:
+            pickle.dump(ensemble, f)
+        print(f"\n✓ Ensemble model saved to {output_dir / 'ensemble_model.pkl'}")
+        
+        # Add to results for comparison
+        results['Ensemble'] = {
+            'model': ensemble,
+            'accuracy': acc_ensemble,
+            'auc': auc_ensemble,
+            'predictions': y_pred_ensemble,
+            'probabilities': y_pred_proba_ensemble
+        }
+        
+        # Update comparison
+        comparison_df = pd.DataFrame({
+            'Model': list(results.keys()),
+            'Accuracy': [r['accuracy'] for r in results.values()],
+            'ROC-AUC': [r['auc'] for r in results.values()]
+        }).sort_values('Accuracy', ascending=False)
+        
+        print(f"\n📊 Final Model Comparison (including Ensemble):")
+        print(comparison_df.to_string(index=False))
+        comparison_df.to_csv(output_dir / 'model_comparison.csv', index=False)
 
 print("\n" + "="*70)
 print("TRAINING COMPLETE!")
